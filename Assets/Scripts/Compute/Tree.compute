@@ -1,17 +1,118 @@
 #pragma kernel Tree
 #pragma kernel Clear
 
-RWTexture2D<float4> Result;
+#define PI 3.141592
+#define SIZEOF_FLOAT 4
+#define SIZEOF_UINT 4
+
+float BranchLength, BranchRadius;
+int TreePolygon, VertexCount, MeshVertexCount, MeshTriangleCount;
+
+RWByteAddressBuffer VertexBuffer;
+RWByteAddressBuffer IndexBuffer;
+RWStructuredBuffer<uint> VertexCounter;
+RWStructuredBuffer<uint> TriangleCounter;
+
+void AppendVertex(uint bufferPosition, float3 vertex, float3 normal) 
+{
+    uint address = bufferPosition * (SIZEOF_FLOAT * 3) * 2;
+    VertexBuffer.Store3(address, asuint(vertex.xzy));
+    VertexBuffer.Store3(address + (SIZEOF_FLOAT * 3), asuint(normal.xzy));
+}
+
+void AppendTriangle(uint bufferPosition, uint3 indices) 
+{
+    uint address = bufferPosition * (SIZEOF_UINT * 3);
+    IndexBuffer.Store3(address, asuint(indices.xzy));
+}
+
+// thanks, ChatGPT!
+float3x3 inverse(float3x3 A) 
+{
+    float a = A._m11 * A._m22 - A._m12 * A._m21;
+    float b = A._m12 * A._m20 - A._m10 * A._m22;
+    float c = A._m10 * A._m21 - A._m11 * A._m20;
+    float determinant = A._m00 * a + A._m01 * b + A._m02 * c;
+    float invDet = 1.0f / determinant;
+    float3x3 invA;
+    invA._m00 = a * invDet;
+    invA._m01 = (A._m02 * A._m21 - A._m01 * A._m22) * invDet;
+    invA._m02 = (A._m01 * A._m12 - A._m02 * A._m11) * invDet;
+    invA._m10 = b * invDet;
+    invA._m11 = (A._m00 * A._m22 - A._m02 * A._m20) * invDet;
+    invA._m12 = (A._m02 * A._m10 - A._m00 * A._m12) * invDet;
+    invA._m20 = c * invDet;
+    invA._m21 = (A._m01 * A._m20 - A._m00 * A._m21) * invDet;
+    invA._m22 = (A._m00 * A._m11 - A._m01 * A._m10) * invDet;
+    return invA;
+}
+
+uint CreateRing(float3 center, float3 n, float3 s, float radius) 
+{
+    uint ctr = 0;
+    uint offset = VertexCounter.IncrementCounter();
+    float angle = ((float) 2.0f * PI) / TreePolygon;
+    float3 start = radius * s;
+    float3 other = radius * normalize(cross(n, start));
+    float3 curr, prev;
+
+    float3x3 B = transpose(float3x3(start, other, n));
+    float3x3 R2D = float3x3(float3(cos(angle), -sin(angle), 0), float3(sin(angle), cos(angle), 0), float3(0, 0, 1));
+    float3x3 R3D = mul(mul(B, R2D), inverse(B));
+
+    curr = start;
+    while (ctr < (uint) TreePolygon) {
+        prev = curr;
+        curr = mul(R3D, prev);
+        uint position;
+        if (ctr == 0) {
+            position = offset;
+        } else position = VertexCounter.IncrementCounter();
+        AppendVertex(position, prev + center, prev / radius);
+        AppendTriangle(TriangleCounter.IncrementCounter(), uint3(offset, offset + ctr + 1, offset + (ctr + 1) % (uint) TreePolygon + 1));
+        ctr++;
+    }
+    return offset;
+}
+
+// vectors nB, nT, sB are normalized
+void CreateFrustum(float3 pT, float3 pB, float3 nT, float3 nB, float3 sB, float rT, float rB) 
+{
+    float3 axis = normalize(pT - pB);
+    uint posB = CreateRing(pB, nB, sB, rB);
+    float3 sT = normalize(sB - dot(sB, nT) * nT);
+    uint posT = CreateRing(pT, nT, sT, rT);
+    uint ctr = 0;
+    while (ctr < (uint) TreePolygon) {
+        uint nxt = (ctr + 1) % (uint) TreePolygon;
+        AppendTriangle(TriangleCounter.IncrementCounter(), uint3(posB + ctr, posT + nxt, posT + ctr));
+        AppendTriangle(TriangleCounter.IncrementCounter(), uint3(posB + ctr, posB + nxt, posT + nxt));
+        ctr++;
+    }
+}
 
 [numthreads(1, 1, 1)]
 void Tree(uint3 id : SV_DispatchThreadID) 
 {
-
-
+    // CreateBase(float3(0, 0, 0), float3(1, 0, 1), float3(0, 1, 0), BranchRadius);
+    CreateFrustum(float3(0.5, 0, 0.75f * BranchLength), float3(0, 0, 0), float3(0.25, 0, 1), float3(0, 0, 1), float3(1, 0, 0), 0.5f * BranchRadius, BranchRadius);
+    CreateFrustum(float3(-0.5, -0.5, BranchLength), float3(0, 0, 0), float3(-0.25, 0, 1), float3(0, 0, 1), float3(1, 0, 0), 0.75f * BranchRadius, BranchRadius);
+    CreateFrustum(float3(0.0, 0.5, 0.5f * BranchLength), float3(0, 0, 0), float3(0, 0.25, 1), float3(0, 0, 1), float3(1, 0, 0), 0.5f * BranchRadius, BranchRadius);
 }
 
-[numthreads(512, 1, 1)]
+[numthreads(1, 1, 1)]
 void Clear(uint3 id : SV_DispatchThreadID)
 {
-
+    // clear any unused vertices
+    while (true) {
+        uint count = VertexCounter.IncrementCounter();
+        if (count >= (uint) MeshVertexCount) break;
+        AppendVertex(count, 0, 0);
+    }
+    // clear any unused triangles
+    while (true) {
+        uint count = TriangleCounter.IncrementCounter();
+        if (count >= (uint) MeshTriangleCount) break;
+        AppendTriangle(count, 0);
+    }
 }

@@ -1,8 +1,9 @@
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Rendering;
 
-public class CreateMesh : MonoBehaviour
+public class LoadTree : MonoBehaviour
 {
 
     public MeshFilter meshFilter;
@@ -29,7 +30,29 @@ public class CreateMesh : MonoBehaviour
 
     private void CreateMesh() 
     {
+        tree.SetInt("TreePolygon", Constants.TREE_POLY);
+        tree.SetInt("VertexCount", Constants.VERTEX_COUNT);
+        tree.SetInt("MeshVertexCount", Constants.MESH_VERTEX_COUNT);
+        tree.SetInt("MeshTriangleCount", Constants.MESH_TRIANGLE_COUNT);
 
+        tree.SetFloat("BranchLength", Constants.BRANCH_LENGTH);
+        tree.SetFloat("BranchRadius", Constants.BRANCH_RADIUS);
+
+        tree.SetBuffer(0, "VertexBuffer", vertexBuffer);
+        tree.SetBuffer(0, "IndexBuffer", indexBuffer);
+        tree.SetBuffer(0, "VertexCounter", vertexCount);
+        tree.SetBuffer(0, "TriangleCounter", triangleCount);
+        tree.Dispatch(0, 1, 1, 1);
+
+        Debug.Log("Created Tree.");
+
+        tree.SetBuffer(1, "VertexBuffer", vertexBuffer);
+        tree.SetBuffer(1, "IndexBuffer", indexBuffer);
+        tree.SetBuffer(1, "VertexCounter", vertexCount);
+        tree.SetBuffer(1, "TriangleCounter", triangleCount);
+        tree.Dispatch(1, 1, 1, 1);
+
+        Debug.Log("Completed Cleanup.");
     }
 
     private void AllocateMesh() 
@@ -44,9 +67,9 @@ public class CreateMesh : MonoBehaviour
         mesh.bounds = new Bounds(dimensions / 2, dimensions);
         mesh.indexBufferTarget |= GraphicsBuffer.Target.Raw;
         mesh.vertexBufferTarget |= GraphicsBuffer.Target.Raw;
-        mesh.SetVertexBufferParams(Constants.VERTEX_COUNT, new VertexAttributeDescriptor(VertexAttribute.Position, VertexAttributeFormat.Float32, 3),  new VertexAttributeDescriptor(VertexAttribute.Normal, VertexAttributeFormat.Float32, 3));
-        mesh.SetIndexBufferParams(Constants.VERTEX_COUNT, IndexFormat.UInt32);
-        mesh.SetSubMesh(0, new SubMeshDescriptor(0, vertexLimit), MeshUpdateFlags.DontRecalculateBounds);
+        mesh.SetVertexBufferParams(Constants.MESH_VERTEX_COUNT, new VertexAttributeDescriptor(VertexAttribute.Position, VertexAttributeFormat.Float32, 3),  new VertexAttributeDescriptor(VertexAttribute.Normal, VertexAttributeFormat.Float32, 3));
+        mesh.SetIndexBufferParams(Constants.MESH_VERTEX_COUNT, IndexFormat.UInt32);
+        mesh.SetSubMesh(0, new SubMeshDescriptor(0, Constants.MESH_VERTEX_COUNT), MeshUpdateFlags.DontRecalculateBounds);
         
         vertexBuffer = mesh.GetVertexBuffer(0);
         indexBuffer = mesh.GetIndexBuffer();
@@ -73,6 +96,7 @@ public class CreateMesh : MonoBehaviour
         // release buffers
         vertexBuffer.Release();
         indexBuffer.Release();
+        metadataBuffer.Release();
        
         // release counters
         vertexCount.Release();
