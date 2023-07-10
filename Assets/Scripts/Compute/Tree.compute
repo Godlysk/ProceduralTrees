@@ -1,3 +1,4 @@
+#pragma kernel Leaves
 #pragma kernel Tree
 #pragma kernel Clear
 
@@ -6,10 +7,14 @@
 #define SIZEOF_UINT 4
 
 float BranchLength, BranchRadius;
-int TreePolygon, VertexCount, MeshVertexCount, MeshTriangleCount;
+int TreePolygon, MeshVertexCount, MeshTriangleCount;
+float TreeCenterX, TreeCenterY, TreeCenterZ, TreeDimensionsX, TreeDimensionsY, TreeDimensionsZ;
+int LeafCount;
 
 RWByteAddressBuffer VertexBuffer;
 RWByteAddressBuffer IndexBuffer;
+RWByteAddressBuffer PointBuffer;
+RWByteAddressBuffer PointIndexBuffer;
 RWStructuredBuffer<uint> VertexCounter;
 RWStructuredBuffer<uint> TriangleCounter;
 
@@ -24,6 +29,13 @@ void AppendTriangle(uint bufferPosition, uint3 indices)
 {
     uint address = bufferPosition * (SIZEOF_UINT * 3);
     IndexBuffer.Store3(address, asuint(indices.xzy));
+}
+
+void AppendLeaf(uint bufferPosition, float3 leaf) 
+{
+    uint address = bufferPosition * (SIZEOF_FLOAT * 3);
+    PointBuffer.Store3(address, asuint(leaf.xzy));
+    PointIndexBuffer.Store(bufferPosition * SIZEOF_UINT, bufferPosition);
 }
 
 // thanks, ChatGPT!
@@ -69,7 +81,7 @@ uint CreateRing(float3 center, float3 n, float3 s, float radius)
             position = offset;
         } else position = VertexCounter.IncrementCounter();
         AppendVertex(position, prev + center, prev / radius);
-        AppendTriangle(TriangleCounter.IncrementCounter(), uint3(offset, offset + ctr + 1, offset + (ctr + 1) % (uint) TreePolygon + 1));
+        // AppendTriangle(TriangleCounter.IncrementCounter(), uint3(offset, offset + ctr + 1, offset + (ctr + 1) % (uint) TreePolygon + 1));
         ctr++;
     }
     return offset;
@@ -80,7 +92,7 @@ void CreateFrustum(float3 pT, float3 pB, float3 nT, float3 nB, float3 sB, float 
 {
     float3 axis = normalize(pT - pB);
     uint posB = CreateRing(pB, nB, sB, rB);
-    float3 sT = normalize(sB - dot(sB, nT) * nT);
+    float3 sT = normalize(sB - (dot(sB, nT) * nT));
     uint posT = CreateRing(pT, nT, sT, rT);
     uint ctr = 0;
     while (ctr < (uint) TreePolygon) {
@@ -91,13 +103,53 @@ void CreateFrustum(float3 pT, float3 pB, float3 nT, float3 nB, float3 sB, float 
     }
 }
 
+// from goo.gl/RXiKaH and keijiro
+uint Hash(uint s) {
+    s ^= 2747636419u;
+    s *= 2654435769u;
+    s ^= s >> 16;
+    s *= 2654435769u;
+    s ^= s >> 16;
+    s *= 2654435769u;
+    return s;
+}
+
+// maps random value to [-0.5, 0.5]
+float MapRange(uint hash) {
+    return ((float(hash) / 4294967295.0) - 0.5f); // 2^32-1
+}
+
+// generate random points within a bounding box
+float3 GenerateLeaf(uint seed) {
+    uint seed0 = Hash(seed);
+    uint seed1 = Hash(seed0);
+    uint seed2 = Hash(seed1);
+    float3 span = float3(TreeDimensionsX * MapRange(seed0), TreeDimensionsY * MapRange(seed1), TreeDimensionsZ * MapRange(seed2));
+    return span + float3(TreeCenterX, TreeCenterY, TreeCenterZ);
+}
+
+bool LeafInBounds(float3 leaf) {
+    return true;
+}
+
+[numthreads(1, 1, 1)]
+void Leaves(uint3 id : SV_DispatchThreadID) {
+    uint pos = 0;
+    while (pos < (uint) LeafCount) {
+        float3 leaf = GenerateLeaf(pos);
+        if (LeafInBounds(leaf)) {
+            AppendLeaf(pos, leaf);
+            pos++;
+        }
+    }
+}
+
 [numthreads(1, 1, 1)]
 void Tree(uint3 id : SV_DispatchThreadID) 
 {
-    // CreateBase(float3(0, 0, 0), float3(1, 0, 1), float3(0, 1, 0), BranchRadius);
-    CreateFrustum(float3(0.5, 0, 0.75f * BranchLength), float3(0, 0, 0), float3(0.25, 0, 1), float3(0, 0, 1), float3(1, 0, 0), 0.5f * BranchRadius, BranchRadius);
-    CreateFrustum(float3(-0.5, -0.5, BranchLength), float3(0, 0, 0), float3(-0.25, 0, 1), float3(0, 0, 1), float3(1, 0, 0), 0.75f * BranchRadius, BranchRadius);
-    CreateFrustum(float3(0.0, 0.5, 0.5f * BranchLength), float3(0, 0, 0), float3(0, 0.25, 1), float3(0, 0, 1), float3(1, 0, 0), 0.5f * BranchRadius, BranchRadius);
+    CreateFrustum(float3(0.0f, 0.0f, 1.0f), float3(0, 0, 0), float3(0, 0, 1.0f), float3(0, 0, 1.0f), float3(0, 1.0f, 0), BranchRadius, BranchRadius);
+    CreateFrustum(float3(0.5f, 0.0f, 1.0f + 0.25f * BranchLength), float3(0, 0, 1.0f), float3(0.5f, 0, 0.5f), float3(0, 0, 1.0f), float3(0, 1.0f, 0), BranchRadius, BranchRadius);
+    CreateFrustum(float3(-0.5f, 0.0f, 1.0f + 0.25f * BranchLength), float3(0, 0, 1.0f), float3(-0.5f, 0, 0.5f), float3(0, 0, 1.0f), float3(0, 1.0f, 0), BranchRadius, BranchRadius);
 }
 
 [numthreads(1, 1, 1)]

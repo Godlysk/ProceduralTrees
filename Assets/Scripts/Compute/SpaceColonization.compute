@@ -1,0 +1,200 @@
+#pragma kernel InitializeVertices
+#pragma kernel AttractorPoints
+#pragma kernel ClosestBranch
+#pragma kernel GrowBranches
+
+#define SIZEOF_FLOAT 4
+#define SIZEOF_UINT 4
+
+// parallelized version of the space-colonization algorithm
+
+RWByteAddressBuffer AttractorBuffer;
+RWByteAddressBuffer AttractorIndexBuffer;
+RWByteAddressBuffer ClosestVertexBuffer;
+RWByteAddressBuffer VertexBuffer;
+RWByteAddressBuffer GrowDirectionBuffer;
+RWByteAddressBuffer IndexBuffer;
+
+RWStructuredBuffer<uint> VertexCounter;
+
+float TreeCenterX, TreeCenterY, TreeCenterZ, TreeDimensionsX, TreeDimensionsY, TreeDimensionsZ;
+float AttractionRadius, KillRadius, BranchLength;
+int VertexCount;
+
+// memory handling
+
+float3 LoadAttractorPoint(uint bufferPosition) {
+    uint address = bufferPosition * (SIZEOF_FLOAT * 3);
+    return asfloat(AttractorBuffer.Load3(address)).xzy;
+}
+
+void StoreAttractorPoint(uint bufferPosition, float3 attractor) {
+    uint address = bufferPosition * (SIZEOF_FLOAT * 3);
+    AttractorBuffer.Store3(address, asuint(attractor.xzy));
+    uint index = bufferPosition * (SIZEOF_UINT);
+    AttractorIndexBuffer.Store(index, asuint(bufferPosition));
+}
+
+float3 LoadClosestVertex(uint bufferPosition) {
+    uint address = bufferPosition * (SIZEOF_UINT);
+    return asuint(ClosestVertexBuffer.Load(address));
+}
+
+void StoreClosestVertex(uint bufferPosition, uint vertexPosition) {
+    uint address = bufferPosition * (SIZEOF_UINT);
+    ClosestVertexBuffer.Store(address, asuint(vertexPosition));
+}
+
+float3 LoadGrowDirection(uint bufferPosition) {
+    uint address = bufferPosition * (SIZEOF_FLOAT * 3);
+    return asfloat(GrowDirectionBuffer.Load3(address)).xzy;
+}
+
+void StoreGrowDirection(uint bufferPosition, float3 growDirection) {
+    uint address = bufferPosition * (SIZEOF_FLOAT * 3);
+    GrowDirectionBuffer.Store3(address, asuint(growDirection.xzy));
+}
+
+float3 LoadVertex(uint bufferPosition) {
+    uint address = bufferPosition * (SIZEOF_FLOAT * 3);
+    return asfloat(VertexBuffer.Load3(address)).xzy;
+}
+
+void StoreVertex(uint bufferPosition, float3 vertex) {
+    uint address = bufferPosition * (SIZEOF_FLOAT * 3);
+    VertexBuffer.Store3(address, asuint(vertex.xzy));
+}
+
+void StoreIndices(uint bufferPosition, uint2 indices) {
+    uint address = bufferPosition * (SIZEOF_UINT * 2);
+    IndexBuffer.Store2(address, asuint(indices));
+}
+
+// random number generation
+
+// from goo.gl/RXiKaH and keijiro
+uint Hash(uint s) {
+    s ^= 2747636419u;
+    s *= 2654435769u;
+    s ^= s >> 16;
+    s *= 2654435769u;
+    s ^= s >> 16;
+    s *= 2654435769u;
+    return s;
+}
+
+// maps random value to [-0.5, 0.5]
+float MapRange(uint hash) {
+    return ((float(hash) / 4294967295.0) - 0.5f); // 2^32-1
+}
+
+// generate random points within a bounding box
+float3 GenerateAttractor(uint seed) {
+    uint seed0 = Hash(seed);
+    uint seed1 = Hash(seed0);
+    uint seed2 = Hash(seed1);
+    float3 span = float3(TreeDimensionsX * MapRange(seed0), TreeDimensionsY * MapRange(seed1), TreeDimensionsZ * MapRange(seed2));
+    return span + float3(TreeCenterX, TreeCenterY, TreeCenterZ);
+}
+
+// WIP: specifies the bounding volume of the tree
+// in the future, sample from a texture
+bool InBounds(float3 attractor) {
+    return true;
+}
+
+[numthreads(512, 1, 1)]
+void InitializeVertices(uint3 id : SV_DispatchThreadID) {
+    uint pos = id.x;
+    if (pos == 0)
+        StoreVertex(pos, float3(2.5, 0.0, 0.0));
+    else if (pos == 1) 
+        StoreVertex(pos, float3(-2.5, 0.0, 0.0));
+    else StoreVertex(pos, float3(0.0, 0.0, 0.0));
+    StoreGrowDirection(pos, float3(0.0, 0.0, 0.0));
+    StoreIndices(pos, uint2(0, 0));
+}
+
+[numthreads(512, 1, 1)]
+void AttractorPoints(uint3 id : SV_DispatchThreadID) 
+{
+    // create attractor points and add them to a buffer
+    uint pos = id.x;
+    uint seed = pos;
+    float3 attractor = GenerateAttractor(seed);
+    while (!InBounds(attractor)) {
+        seed = Hash(seed);
+        attractor = GenerateAttractor(seed);
+    }
+    StoreAttractorPoint(pos, attractor);
+    StoreClosestVertex(pos, 0);
+}
+
+[numthreads(512, 1, 1)]
+void ClosestBranch(uint3 id : SV_DispatchThreadID) 
+{
+    uint pos = id.x;
+    // lookup the previous closest vertex. if the distance <= kill distance, ignore
+    float3 attractor = LoadAttractorPoint(pos);
+    uint vertexIndex = LoadClosestVertex(pos);
+    float3 closest = LoadVertex(vertexIndex);
+    float distance = length(attractor - closest);
+
+    if (distance <= KillRadius) return;
+
+    // identify the closest vertex to each attractor point by iterating over all vertices (expensive)
+    // (future optimization: spatial hashgrid for vertices)
+    uint minIndex = vertexIndex;
+    float minDistance = distance;
+    vertexIndex = 0;
+    while (vertexIndex < (uint) VertexCount) {
+        float3 vertex = LoadVertex(vertexIndex);
+        // the position zero is only permissible as the first vertex
+        if (length(vertex) == 0.0f && vertexIndex > 0)
+            break;
+        distance = length(attractor - vertex);
+        if (distance < minDistance) {
+            minDistance = distance;
+            minIndex = vertexIndex;
+            closest = vertex;
+        }
+        vertexIndex++;
+    }
+
+    // when the closest vertex is identified store it and determine the distance
+    StoreClosestVertex(pos, minIndex);
+
+    // if it is within, add the attractor point's contribution to the growth direction
+    if (distance <= AttractionRadius) {
+        float3 contribution = (attractor - closest) / minDistance;
+        float3 previous = LoadGrowDirection(minIndex);
+        StoreGrowDirection(minIndex, previous + contribution);
+    }
+}
+
+[numthreads(512, 1, 1)]
+void GrowBranches(uint3 id : SV_DispatchThreadID) 
+{
+    // for a given attractor point, identify the closest vertex through a lookup
+    uint pos = id.x;
+    float3 attractor = LoadAttractorPoint(pos);
+    uint vertexIndex = LoadClosestVertex(pos);
+    float3 closest = LoadVertex(vertexIndex);
+    float distance = length(attractor - closest);
+
+    // if it is outside attraction radius or within kill distance, ignore
+    // (what if there are no points within attraction radius of attractors?)
+    if (distance > AttractionRadius) return;
+    if (distance <= KillRadius) return;
+    
+    float3 growDirection = LoadGrowDirection(vertexIndex);
+    StoreGrowDirection(vertexIndex, float3(0.0f, 0.0f, 0.0f));
+
+    // if the grow direction is 0, ignore, else append a vertex in the grow direction and add a branch
+    if (length(growDirection) != 0.0f) {
+        uint newIndex = VertexCounter.IncrementCounter();
+        StoreVertex(newIndex, closest + BranchLength * normalize(growDirection));
+        // it's a tree! --> a new branch iff a new vertex!
+        StoreIndices(newIndex, uint2(vertexIndex, newIndex));
+    }
+}
