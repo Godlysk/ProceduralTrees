@@ -1,0 +1,171 @@
+#pragma kernel Initialize
+#pragma kernel CreateBranch
+
+#define PI 3.141592
+#define SIZEOF_FLOAT 4
+#define SIZEOF_UINT 4
+
+float BranchLength, BranchRadius;
+int TreePolygon, MeshVertexCount, MeshTriangleCount, SegmentCount;
+
+RWByteAddressBuffer VertexBuffer;
+RWByteAddressBuffer IndexBuffer;
+RWByteAddressBuffer PointBuffer;
+RWByteAddressBuffer SegmentBuffer;
+RWStructuredBuffer<uint> VertexCounter;
+RWStructuredBuffer<uint> PointCounter;
+RWStructuredBuffer<uint> TriangleCounter;
+
+// memory handling
+
+float3 LoadPoint(uint bufferPosition) {
+    uint address = bufferPosition * (SIZEOF_FLOAT * 3);
+    return asfloat(PointBuffer.Load3(address)).xzy;
+}
+
+uint2 LoadSegment(uint bufferPosition) {
+    uint address = bufferPosition * (SIZEOF_UINT * 2);
+    return asuint(SegmentBuffer.Load2(address));
+}
+
+float3 LoadVertex(uint bufferPosition) {
+    uint address = bufferPosition * (SIZEOF_FLOAT * 3) * 2;
+    return asfloat(VertexBuffer.Load3(address)).xzy;
+}
+
+void StoreVertex(uint bufferPosition, float3 vertex, float3 normal) {
+    uint address = bufferPosition * (SIZEOF_FLOAT * 3) * 2;
+    VertexBuffer.Store3(address, asuint(vertex.xzy));
+    VertexBuffer.Store3(address + (SIZEOF_FLOAT * 3), asuint(normal.xzy));
+}
+
+void StoreTriangle(uint bufferPosition, uint3 indices) {
+    uint address = bufferPosition * (SIZEOF_UINT * 3);
+    IndexBuffer.Store3(address, asuint(indices.xzy));
+}
+
+// thanks, ChatGPT!
+float3x3 inverse(float3x3 A) 
+{
+    float a = A._m11 * A._m22 - A._m12 * A._m21;
+    float b = A._m12 * A._m20 - A._m10 * A._m22;
+    float c = A._m10 * A._m21 - A._m11 * A._m20;
+    float determinant = A._m00 * a + A._m01 * b + A._m02 * c;
+    float invDet = 1.0f / determinant;
+    float3x3 invA;
+    invA._m00 = a * invDet;
+    invA._m01 = (A._m02 * A._m21 - A._m01 * A._m22) * invDet;
+    invA._m02 = (A._m01 * A._m12 - A._m02 * A._m11) * invDet;
+    invA._m10 = b * invDet;
+    invA._m11 = (A._m00 * A._m22 - A._m02 * A._m20) * invDet;
+    invA._m12 = (A._m02 * A._m10 - A._m00 * A._m12) * invDet;
+    invA._m20 = c * invDet;
+    invA._m21 = (A._m01 * A._m20 - A._m00 * A._m21) * invDet;
+    invA._m22 = (A._m00 * A._m11 - A._m01 * A._m10) * invDet;
+    return invA;
+}
+
+void CreateRing(float3 center, float3 n, float3 s, float radius, uint offset) 
+{
+    uint ctr = 0;
+    StoreVertex(offset, center, n);
+    float angle = ((float) 2.0f * PI) / TreePolygon;
+    float3 start = radius * normalize(s);
+    float3 other = radius * normalize(cross(n, start));
+    float3 curr, prev;
+
+    float3x3 B = transpose(float3x3(start, other, n));
+    float3x3 R2D = float3x3(float3(cos(angle), -sin(angle), 0), float3(sin(angle), cos(angle), 0), float3(0, 0, 1));
+    float3x3 R3D = mul(mul(B, R2D), inverse(B));
+    curr = start;
+    while (ctr < (uint) TreePolygon) {
+        prev = curr;
+        curr = mul(R3D, prev);
+        StoreVertex(offset + ctr + 1, prev + center, prev / radius);
+        StoreTriangle(TriangleCounter.IncrementCounter(), uint3(offset, offset + ctr + 1, offset + (ctr + 1) % (TreePolygon) + 1));
+        ctr++;
+    }
+}
+
+
+void CreateFrustum(uint rawT, uint rawB)
+{
+    float3 pT = LoadPoint(rawT);
+    uint posB = rawB * (TreePolygon + 1);
+    uint posT = rawT * (TreePolygon + 1);
+    float3 pB = LoadVertex(posB);
+    float3 first = LoadVertex(posB + 1);
+    float3 curr_sB = normalize(first - pB);
+    float3 oB = normalize(LoadVertex(posB + 2) - pB);
+    float3 curr_nB = normalize(cross(curr_sB, oB));
+    float3 nT = normalize(pT - pB);
+    float3 nB = normalize((curr_nB + nT) / 2);
+    float rB = length(first - pB);
+    float3 sB = normalize(curr_sB - (dot(curr_sB, nB) * nB));
+    // CreateRing(pB, nB, sB, rB, posB);
+    float rT = rB * 0.95;
+    float3 sT = normalize(sB - (dot(sB, nT) * nT));
+    CreateRing(pT, nT, sT, rT, posT);
+
+    uint ctr = 0;
+    while (ctr < (uint) TreePolygon) {
+        uint nxt = (ctr + 1) % (uint) TreePolygon;
+        StoreTriangle(TriangleCounter.IncrementCounter(), uint3(posB + ctr + 1, posT + nxt + 1, posT + ctr + 1));
+        StoreTriangle(TriangleCounter.IncrementCounter(), uint3(posB + ctr + 1, posB + nxt + 1, posT + nxt + 1));
+        ctr++;
+    }
+}
+
+
+[numthreads(1, 1, 1)]
+void Initialize(uint3 id : SV_DispatchThreadID)
+{
+    // clear any unused vertices
+    uint count = 0;
+    while (count < (uint) MeshVertexCount)
+        StoreVertex(count++, 0, 0);
+
+    // clear any unused triangles
+    count = 0;
+    while (count < (uint) MeshTriangleCount)
+        StoreTriangle(count++, 0);
+}
+
+[numthreads(1, 1, 1)]
+void CreateBranch(uint3 id : SV_DispatchThreadID) 
+{
+    uint start = 0;
+    while (start < (uint) SegmentCount)
+    {
+        uint pos = start;
+        uint2 segment = LoadSegment(pos);
+        bool visited = (length(LoadVertex(segment.y * (TreePolygon + 1))) >= 0.001f);
+        if (visited) {
+            start++;
+            continue;
+        }
+        float r = (pos == 0) ? BranchRadius : 0.975 * length(LoadVertex(segment.x * (TreePolygon + 1) + 1) - LoadVertex(segment.x * (TreePolygon + 1)));
+        float3 n = normalize(LoadPoint(segment.y) - LoadPoint(segment.x));
+        float3 s = (n.x == 0 && n.y == 0) ? float3(1, 0, 0) : float3(n.x, -n.y, 0);
+        uint new_src = PointCounter.IncrementCounter();
+        CreateRing(LoadPoint(segment.x), n, s, r, new_src * (TreePolygon + 1));
+        uint previous = segment.x;
+        uint current = segment.y;
+        CreateFrustum(current, new_src);
+        pos++;
+        start++;
+        while (pos < (uint) SegmentCount) 
+        {
+            segment = LoadSegment(pos);
+            if (segment.x == current) 
+            {
+                if (start == pos) start++;
+                previous = current;
+                current = segment.y;
+                CreateFrustum(current, previous);
+            }
+            pos++;
+        }
+    }
+}
+

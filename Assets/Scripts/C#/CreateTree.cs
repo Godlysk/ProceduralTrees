@@ -6,10 +6,14 @@ using UnityEngine.Rendering;
 public class CreateTree : MonoBehaviour
 {
     public ComputeShader algorithm;
+    public ComputeShader mesher;
 
-    private Mesh treeMesh;
+    private Mesh branchMesh;
+    private Mesh skeletonMesh;
     private Mesh leafMesh;
-    public MeshFilter treeFilter;
+
+    public MeshFilter branchFilter;
+    public MeshFilter skeletonFilter;
     public MeshFilter leafFilter;
 
     private GraphicsBuffer vertexBuffer;
@@ -17,10 +21,15 @@ public class CreateTree : MonoBehaviour
     private GraphicsBuffer attractorBuffer;
     private GraphicsBuffer attractorIndexBuffer;
     private ComputeBuffer growDirectionBuffer;
+    private ComputeBuffer stemDirectionBuffer;
     private ComputeBuffer closestVertexBuffer;
+    private GraphicsBuffer meshVertexBuffer;
+    private GraphicsBuffer meshIndexBuffer;
 
     private ComputeBuffer metadataBuffer;
     private ComputeBuffer vertexCounter;
+    private ComputeBuffer meshVertexCounter;
+    private ComputeBuffer meshTriangleCounter;
 
     void Awake()
     {
@@ -30,7 +39,7 @@ public class CreateTree : MonoBehaviour
 
     void RunAlgorithm() 
     {
-        vertexCounter.SetCounterValue(2);
+        vertexCounter.SetCounterValue(1);
 
         algorithm.SetFloat("TreeCenterX", Constants.TREE_CENTER[0]);
         algorithm.SetFloat("TreeCenterY", Constants.TREE_CENTER[1]);
@@ -43,12 +52,14 @@ public class CreateTree : MonoBehaviour
         algorithm.SetFloat("KillRadius", Constants.KILL_RADIUS);
         algorithm.SetFloat("BranchLength", Constants.BRANCH_LENGTH);
         algorithm.SetInt("VertexCount", Constants.VERTEX_COUNT);
+        algorithm.SetInt("AttractorCount", Constants.ATTRACTOR_COUNT);
 
         algorithm.SetBuffer(0, "AttractorBuffer", attractorBuffer);
         algorithm.SetBuffer(0, "AttractorIndexBuffer", attractorIndexBuffer);
         algorithm.SetBuffer(0, "ClosestVertexBuffer", closestVertexBuffer);
         algorithm.SetBuffer(0, "VertexBuffer", vertexBuffer);
         algorithm.SetBuffer(0, "GrowDirectionBuffer", growDirectionBuffer);
+        algorithm.SetBuffer(0, "StemDirectionBuffer", stemDirectionBuffer);
         algorithm.SetBuffer(0, "IndexBuffer", indexBuffer);
         algorithm.Dispatch(0, Constants.VERTEX_COUNT / Constants.THREAD_COUNT, 1, 1);
 
@@ -57,6 +68,7 @@ public class CreateTree : MonoBehaviour
         algorithm.SetBuffer(1, "ClosestVertexBuffer", closestVertexBuffer);
         algorithm.SetBuffer(1, "VertexBuffer", vertexBuffer);
         algorithm.SetBuffer(1, "GrowDirectionBuffer", growDirectionBuffer);
+        algorithm.SetBuffer(1, "StemDirectionBuffer", stemDirectionBuffer);
         algorithm.SetBuffer(1, "IndexBuffer", indexBuffer);
         algorithm.Dispatch(1, Constants.ATTRACTOR_COUNT / Constants.THREAD_COUNT, 1, 1);
 
@@ -67,6 +79,7 @@ public class CreateTree : MonoBehaviour
             algorithm.SetBuffer(2, "ClosestVertexBuffer", closestVertexBuffer);
             algorithm.SetBuffer(2, "VertexBuffer", vertexBuffer);
             algorithm.SetBuffer(2, "GrowDirectionBuffer", growDirectionBuffer);
+            algorithm.SetBuffer(2, "StemDirectionBuffer", stemDirectionBuffer);
             algorithm.SetBuffer(2, "IndexBuffer", indexBuffer);
             algorithm.Dispatch(2, Constants.ATTRACTOR_COUNT / Constants.THREAD_COUNT, 1, 1);
 
@@ -75,41 +88,65 @@ public class CreateTree : MonoBehaviour
             algorithm.SetBuffer(3, "ClosestVertexBuffer", closestVertexBuffer);
             algorithm.SetBuffer(3, "VertexBuffer", vertexBuffer);
             algorithm.SetBuffer(3, "GrowDirectionBuffer", growDirectionBuffer);
+            algorithm.SetBuffer(3, "StemDirectionBuffer", stemDirectionBuffer);
             algorithm.SetBuffer(3, "IndexBuffer", indexBuffer);
             algorithm.SetBuffer(3, "VertexCounter", vertexCounter);
-            algorithm.Dispatch(3, Constants.ATTRACTOR_COUNT / Constants.THREAD_COUNT, 1, 1);
+            // algorithm.Dispatch(3, Constants.ATTRACTOR_COUNT / Constants.THREAD_COUNT, 1, 1);
+            algorithm.Dispatch(3, Constants.VERTEX_COUNT / Constants.THREAD_COUNT, 1, 1);
+
+            // ReadPointCount();
         }
 
         Debug.Log("Tree Generation Complete.");
 
+        // meshing step has not been parallelized
+
+        meshVertexCounter.SetCounterValue(0);
+        meshTriangleCounter.SetCounterValue(0);
+
+        mesher.SetInt("TreePolygon", Constants.TREE_POLY);
+        mesher.SetInt("MeshVertexCount", Constants.MESH_VERTEX_COUNT);
+        mesher.SetInt("MeshTriangleCount", Constants.MESH_TRIANGLE_COUNT);
+        mesher.SetInt("SegmentCount", Constants.VERTEX_COUNT);
+        mesher.SetFloat("BranchRadius", Constants.BRANCH_RADIUS);
+        mesher.SetFloat("BranchLength", Constants.BRANCH_LENGTH);
+
+        mesher.SetBuffer(0, "PointBuffer", vertexBuffer);
+        mesher.SetBuffer(0, "SegmentBuffer", indexBuffer);
+        mesher.SetBuffer(0, "VertexBuffer", meshVertexBuffer);
+        mesher.SetBuffer(0, "IndexBuffer", meshIndexBuffer);
+        mesher.SetBuffer(0, "VertexCounter", meshVertexCounter);
+        mesher.SetBuffer(0, "TriangleCounter", meshTriangleCounter);
+        mesher.Dispatch(0, 1, 1, 1);
+
+        mesher.SetBuffer(1, "PointBuffer", vertexBuffer);
+        mesher.SetBuffer(1, "SegmentBuffer", indexBuffer);
+        mesher.SetBuffer(1, "VertexBuffer", meshVertexBuffer);
+        mesher.SetBuffer(1, "IndexBuffer", meshIndexBuffer);
+        mesher.SetBuffer(1, "VertexCounter", meshVertexCounter);
+        mesher.SetBuffer(1, "PointCounter", vertexCounter);
+        mesher.SetBuffer(1, "TriangleCounter", meshTriangleCounter);
+        mesher.Dispatch(1, 1, 1, 1);
+
+        Debug.Log("Tree Meshing Complete.");
+
+    }
+
+    private void ReadPointCount() {
+        int[] count = { 0 };
+        ComputeBuffer.CopyCount(vertexCounter, metadataBuffer, 0);
+        metadataBuffer.GetData(count);
+        Debug.Log(count[0]);
     }
 
     void AllocateMeshes() 
     {
         growDirectionBuffer = new ComputeBuffer(Constants.VERTEX_COUNT, 4 * 3, ComputeBufferType.Raw);
+        stemDirectionBuffer = new ComputeBuffer(Constants.VERTEX_COUNT, 4 * 3, ComputeBufferType.Raw);
         closestVertexBuffer = new ComputeBuffer(Constants.ATTRACTOR_COUNT, 4, ComputeBufferType.Raw);
-        AllocateTree();
         AllocateLeaves();
-    }
-
-    void AllocateTree() 
-    {
-        metadataBuffer = new ComputeBuffer(1, sizeof(int), ComputeBufferType.Raw);
-        vertexCounter = new ComputeBuffer(1, sizeof(int), ComputeBufferType.Counter);
-
-        treeMesh = new Mesh();
-        Vector3 dimensions = new Vector3(Constants.TREE_DIMENSIONS[0], Constants.TREE_DIMENSIONS[1], Constants.TREE_DIMENSIONS[2]);
-        Vector3 center = new Vector3(Constants.TREE_CENTER[0], Constants.TREE_CENTER[1], Constants.TREE_CENTER[2]);
-        treeMesh.bounds = new Bounds(center, dimensions);
-        treeMesh.indexBufferTarget |= GraphicsBuffer.Target.Raw;
-        treeMesh.vertexBufferTarget |= GraphicsBuffer.Target.Raw;
-        treeMesh.SetVertexBufferParams(Constants.VERTEX_COUNT, new VertexAttributeDescriptor(VertexAttribute.Position, VertexAttributeFormat.Float32, 3));
-        treeMesh.SetIndexBufferParams(Constants.VERTEX_COUNT * 2, IndexFormat.UInt32);
-        treeMesh.SetSubMesh(0, new SubMeshDescriptor(0, Constants.VERTEX_COUNT, MeshTopology.Lines), MeshUpdateFlags.DontRecalculateBounds);
-        
-        vertexBuffer = treeMesh.GetVertexBuffer(0);
-        indexBuffer = treeMesh.GetIndexBuffer();
-        treeFilter.sharedMesh = treeMesh;
+        AllocateSkeleton();
+        AllocateBranches();
     }
 
     void AllocateLeaves() 
@@ -129,6 +166,46 @@ public class CreateTree : MonoBehaviour
         leafFilter.sharedMesh = leafMesh;
     }
 
+    void AllocateSkeleton() 
+    {
+        metadataBuffer = new ComputeBuffer(1, sizeof(int), ComputeBufferType.Raw);
+        vertexCounter = new ComputeBuffer(1, sizeof(int), ComputeBufferType.Counter);
+
+        skeletonMesh = new Mesh();
+        Vector3 dimensions = new Vector3(Constants.TREE_DIMENSIONS[0], Constants.TREE_DIMENSIONS[1], Constants.TREE_DIMENSIONS[2]);
+        Vector3 center = new Vector3(Constants.TREE_CENTER[0], Constants.TREE_CENTER[1], Constants.TREE_CENTER[2]);
+        skeletonMesh.bounds = new Bounds(center, dimensions);
+        skeletonMesh.indexBufferTarget |= GraphicsBuffer.Target.Raw;
+        skeletonMesh.vertexBufferTarget |= GraphicsBuffer.Target.Raw;
+        skeletonMesh.SetVertexBufferParams(Constants.VERTEX_COUNT, new VertexAttributeDescriptor(VertexAttribute.Position, VertexAttributeFormat.Float32, 3));
+        skeletonMesh.SetIndexBufferParams(Constants.VERTEX_COUNT * 2, IndexFormat.UInt32);
+        skeletonMesh.SetSubMesh(0, new SubMeshDescriptor(0, Constants.VERTEX_COUNT, MeshTopology.Lines), MeshUpdateFlags.DontRecalculateBounds);
+        
+        vertexBuffer = skeletonMesh.GetVertexBuffer(0);
+        indexBuffer = skeletonMesh.GetIndexBuffer();
+        skeletonFilter.sharedMesh = skeletonMesh;
+    }
+
+    void AllocateBranches()
+    {
+        meshVertexCounter = new ComputeBuffer(1, sizeof(int), ComputeBufferType.Counter);
+        meshTriangleCounter = new ComputeBuffer(1, sizeof(int), ComputeBufferType.Counter);
+
+        branchMesh = new Mesh();
+        Vector3 dimensions = new Vector3(Constants.TREE_DIMENSIONS[0], Constants.TREE_DIMENSIONS[1], Constants.TREE_DIMENSIONS[2]);
+        Vector3 center = new Vector3(Constants.TREE_CENTER[0], Constants.TREE_CENTER[1], Constants.TREE_CENTER[2]);
+        branchMesh.bounds = new Bounds(center, dimensions);
+        branchMesh.indexBufferTarget |= GraphicsBuffer.Target.Raw;
+        branchMesh.vertexBufferTarget |= GraphicsBuffer.Target.Raw;
+        branchMesh.SetVertexBufferParams(Constants.MESH_VERTEX_COUNT, new VertexAttributeDescriptor(VertexAttribute.Position, VertexAttributeFormat.Float32, 3),  new VertexAttributeDescriptor(VertexAttribute.Normal, VertexAttributeFormat.Float32, 3));
+        branchMesh.SetIndexBufferParams(Constants.MESH_TRIANGLE_COUNT * 3, IndexFormat.UInt32);
+        branchMesh.SetSubMesh(0, new SubMeshDescriptor(0, Constants.MESH_VERTEX_COUNT), MeshUpdateFlags.DontRecalculateBounds);
+        
+        meshVertexBuffer = branchMesh.GetVertexBuffer(0);
+        meshIndexBuffer = branchMesh.GetIndexBuffer();
+        branchFilter.sharedMesh = branchMesh;
+    }
+
     void OnDestroy() 
     {
         vertexBuffer.Release();
@@ -136,14 +213,21 @@ public class CreateTree : MonoBehaviour
         attractorBuffer.Release();
         attractorIndexBuffer.Release();
         growDirectionBuffer.Release();
+        stemDirectionBuffer.Release();
         closestVertexBuffer.Release();
+        meshVertexBuffer.Release();
+        meshIndexBuffer.Release();
 
         metadataBuffer.Release();
         vertexCounter.Release();
+        meshVertexCounter.Release();
+        meshTriangleCounter.Release();
 
-        treeFilter.sharedMesh = null;
+        branchFilter.sharedMesh = null;
+        skeletonFilter.sharedMesh = null;
         leafFilter.sharedMesh = null;
-        Object.Destroy(treeMesh);
+        Object.Destroy(branchMesh);
+        Object.Destroy(skeletonMesh);
         Object.Destroy(leafMesh);
     }
 }

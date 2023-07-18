@@ -13,13 +13,14 @@ RWByteAddressBuffer AttractorIndexBuffer;
 RWByteAddressBuffer ClosestVertexBuffer;
 RWByteAddressBuffer VertexBuffer;
 RWByteAddressBuffer GrowDirectionBuffer;
+RWByteAddressBuffer StemDirectionBuffer;
 RWByteAddressBuffer IndexBuffer;
 
 RWStructuredBuffer<uint> VertexCounter;
 
 float TreeCenterX, TreeCenterY, TreeCenterZ, TreeDimensionsX, TreeDimensionsY, TreeDimensionsZ;
 float AttractionRadius, KillRadius, BranchLength;
-int VertexCount;
+int VertexCount, AttractorCount;
 
 // memory handling
 
@@ -35,7 +36,7 @@ void StoreAttractorPoint(uint bufferPosition, float3 attractor) {
     AttractorIndexBuffer.Store(index, asuint(bufferPosition));
 }
 
-float3 LoadClosestVertex(uint bufferPosition) {
+uint LoadClosestVertex(uint bufferPosition) {
     uint address = bufferPosition * (SIZEOF_UINT);
     return asuint(ClosestVertexBuffer.Load(address));
 }
@@ -43,6 +44,16 @@ float3 LoadClosestVertex(uint bufferPosition) {
 void StoreClosestVertex(uint bufferPosition, uint vertexPosition) {
     uint address = bufferPosition * (SIZEOF_UINT);
     ClosestVertexBuffer.Store(address, asuint(vertexPosition));
+}
+
+float3 LoadStemDirection(uint bufferPosition) {
+    uint address = bufferPosition * (SIZEOF_FLOAT * 3);
+    return asfloat(StemDirectionBuffer.Load3(address)).xzy;
+}
+
+void StoreStemDirection(uint bufferPosition, float3 stemDirection) {
+    uint address = bufferPosition * (SIZEOF_FLOAT * 3);
+    StemDirectionBuffer.Store3(address, asuint(stemDirection.xzy));
 }
 
 float3 LoadGrowDirection(uint bufferPosition) {
@@ -106,11 +117,8 @@ bool InBounds(float3 attractor) {
 [numthreads(512, 1, 1)]
 void InitializeVertices(uint3 id : SV_DispatchThreadID) {
     uint pos = id.x;
-    if (pos == 0)
-        StoreVertex(pos, float3(2.5, 0.0, 0.0));
-    else if (pos == 1) 
-        StoreVertex(pos, float3(-2.5, 0.0, 0.0));
-    else StoreVertex(pos, float3(0.0, 0.0, 0.0));
+    StoreVertex(pos, float3(0.0, 0.0, 0.0));
+    StoreStemDirection(pos, float3(0.0, 0.0, 0.0));
     StoreGrowDirection(pos, float3(0.0, 0.0, 0.0));
     StoreIndices(pos, uint2(0, 0));
 }
@@ -175,26 +183,18 @@ void ClosestBranch(uint3 id : SV_DispatchThreadID)
 [numthreads(512, 1, 1)]
 void GrowBranches(uint3 id : SV_DispatchThreadID) 
 {
-    // for a given attractor point, identify the closest vertex through a lookup
     uint pos = id.x;
-    float3 attractor = LoadAttractorPoint(pos);
-    uint vertexIndex = LoadClosestVertex(pos);
-    float3 closest = LoadVertex(vertexIndex);
-    float distance = length(attractor - closest);
-
-    // if it is outside attraction radius or within kill distance, ignore
-    // (what if there are no points within attraction radius of attractors?)
-    if (distance > AttractionRadius) return;
-    if (distance <= KillRadius) return;
+    float3 dir = LoadGrowDirection(pos);
+    float3 stem = LoadStemDirection(pos);
     
-    float3 growDirection = LoadGrowDirection(vertexIndex);
-    StoreGrowDirection(vertexIndex, float3(0.0f, 0.0f, 0.0f));
+    if (length(dir) == 0.0f) return;
+    StoreGrowDirection(pos, float3(0.0f, 0.0f, 0.0f));
 
     // if the grow direction is 0, ignore, else append a vertex in the grow direction and add a branch
-    if (length(growDirection) != 0.0f) {
-        uint newIndex = VertexCounter.IncrementCounter();
-        StoreVertex(newIndex, closest + BranchLength * normalize(growDirection));
-        // it's a tree! --> a new branch iff a new vertex!
-        StoreIndices(newIndex, uint2(vertexIndex, newIndex));
-    }
+    uint next = VertexCounter.IncrementCounter();
+    float3 grow = normalize(normalize(dir) + stem);
+    StoreVertex(next, LoadVertex(pos) + BranchLength * grow);
+    // it's a tree! --> a new branch iff a new vertex!
+    StoreIndices(next - 1, uint2(pos, next));
+    StoreStemDirection(next, grow);
 }
