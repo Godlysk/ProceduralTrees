@@ -39,7 +39,7 @@ public class CreateTree : MonoBehaviour
 
     void RunAlgorithm() 
     {
-        vertexCounter.SetCounterValue(1);
+        vertexCounter.SetCounterValue((uint) Constants.SEED_COUNT);
 
         algorithm.SetFloat("TreeCenterX", Constants.TREE_CENTER[0]);
         algorithm.SetFloat("TreeCenterY", Constants.TREE_CENTER[1]);
@@ -53,6 +53,7 @@ public class CreateTree : MonoBehaviour
         algorithm.SetFloat("BranchLength", Constants.BRANCH_LENGTH);
         algorithm.SetInt("VertexCount", Constants.VERTEX_COUNT);
         algorithm.SetInt("AttractorCount", Constants.ATTRACTOR_COUNT);
+        algorithm.SetInt("SeedCount", Constants.SEED_COUNT);
 
         algorithm.SetBuffer(0, "AttractorBuffer", attractorBuffer);
         algorithm.SetBuffer(0, "AttractorIndexBuffer", attractorIndexBuffer);
@@ -91,7 +92,7 @@ public class CreateTree : MonoBehaviour
             algorithm.SetBuffer(3, "StemDirectionBuffer", stemDirectionBuffer);
             algorithm.SetBuffer(3, "IndexBuffer", indexBuffer);
             algorithm.SetBuffer(3, "VertexCounter", vertexCounter);
-            // algorithm.Dispatch(3, Constants.ATTRACTOR_COUNT / Constants.THREAD_COUNT, 1, 1);
+            // algorithm.Dispatch(3, 1, 1, 1);
             algorithm.Dispatch(3, Constants.VERTEX_COUNT / Constants.THREAD_COUNT, 1, 1);
 
             // ReadPointCount();
@@ -105,6 +106,7 @@ public class CreateTree : MonoBehaviour
         meshTriangleCounter.SetCounterValue(0);
 
         mesher.SetInt("TreePolygon", Constants.TREE_POLY);
+        mesher.SetInt("SeedCount", Constants.SEED_COUNT);
         mesher.SetInt("MeshVertexCount", Constants.MESH_VERTEX_COUNT);
         mesher.SetInt("MeshTriangleCount", Constants.MESH_TRIANGLE_COUNT);
         mesher.SetInt("SegmentCount", Constants.VERTEX_COUNT);

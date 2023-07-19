@@ -6,7 +6,7 @@
 #define SIZEOF_UINT 4
 
 float BranchLength, BranchRadius;
-int TreePolygon, MeshVertexCount, MeshTriangleCount, SegmentCount;
+int TreePolygon, MeshVertexCount, MeshTriangleCount, SegmentCount, SeedCount;
 
 RWByteAddressBuffer VertexBuffer;
 RWByteAddressBuffer IndexBuffer;
@@ -103,7 +103,7 @@ void CreateFrustum(uint rawT, uint rawB)
     float rB = length(first - pB);
     float3 sB = normalize(curr_sB - (dot(curr_sB, nB) * nB));
     // CreateRing(pB, nB, sB, rB, posB);
-    float rT = rB * 0.95;
+    float rT = rB * 0.96;
     float3 sT = normalize(sB - (dot(sB, nT) * nT));
     CreateRing(pT, nT, sT, rT, posT);
 
@@ -139,14 +139,14 @@ void CreateBranch(uint3 id : SV_DispatchThreadID)
     {
         uint pos = start;
         uint2 segment = LoadSegment(pos);
-        bool visited = (length(LoadVertex(segment.y * (TreePolygon + 1))) >= 0.001f);
-        if (visited) {
+        if (segment.x == 0 && segment.y == 0) break;
+        if (length(LoadVertex(segment.y * (TreePolygon + 1))) > 0) {
             start++;
             continue;
         }
-        float r = (pos == 0) ? BranchRadius : 0.975 * length(LoadVertex(segment.x * (TreePolygon + 1) + 1) - LoadVertex(segment.x * (TreePolygon + 1)));
+        float r = (pos < (uint) SeedCount) ? BranchRadius : 0.92f * length(LoadVertex(segment.x * (TreePolygon + 1) + 1) - LoadVertex(segment.x * (TreePolygon + 1)));
         float3 n = normalize(LoadPoint(segment.y) - LoadPoint(segment.x));
-        float3 s = (n.x == 0 && n.y == 0) ? float3(1, 0, 0) : float3(n.x, -n.y, 0);
+        float3 s = (n.x == 0 && n.y == 0) ? float3(1, 0, 0) : float3(n.y, -n.x, 0);
         uint new_src = PointCounter.IncrementCounter();
         CreateRing(LoadPoint(segment.x), n, s, r, new_src * (TreePolygon + 1));
         uint previous = segment.x;

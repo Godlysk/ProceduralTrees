@@ -20,7 +20,7 @@ RWStructuredBuffer<uint> VertexCounter;
 
 float TreeCenterX, TreeCenterY, TreeCenterZ, TreeDimensionsX, TreeDimensionsY, TreeDimensionsZ;
 float AttractionRadius, KillRadius, BranchLength;
-int VertexCount, AttractorCount;
+int VertexCount, AttractorCount, SeedCount;
 
 // memory handling
 
@@ -108,16 +108,23 @@ float3 GenerateAttractor(uint seed) {
     return span + float3(TreeCenterX, TreeCenterY, TreeCenterZ);
 }
 
-// WIP: specifies the bounding volume of the tree
+// specifies the bounding volume of the tree
 // in the future, sample from a texture
 bool InBounds(float3 attractor) {
-    return true;
+    float3 treeCenter = float3(TreeCenterX, TreeCenterY, TreeCenterZ);
+    return (length(attractor - treeCenter) <= 2.0f);
+    // return true;
 }
 
 [numthreads(512, 1, 1)]
-void InitializeVertices(uint3 id : SV_DispatchThreadID) {
+void InitializeVertices(uint3 id : SV_DispatchThreadID) 
+{
+    // seeds
     uint pos = id.x;
-    StoreVertex(pos, float3(0.0, 0.0, 0.0));
+    float faraway = -100.0f * float3(0, 0, 1);
+    if (pos == 0) StoreVertex(pos, float3(0.0, 0.0, 0.0));
+    else StoreVertex(pos, faraway);
+
     StoreStemDirection(pos, float3(0.0, 0.0, 0.0));
     StoreGrowDirection(pos, float3(0.0, 0.0, 0.0));
     StoreIndices(pos, uint2(0, 0));
@@ -131,7 +138,7 @@ void AttractorPoints(uint3 id : SV_DispatchThreadID)
     uint seed = pos;
     float3 attractor = GenerateAttractor(seed);
     while (!InBounds(attractor)) {
-        seed = Hash(seed);
+        seed = Hash(seed ^ 2747636419u);
         attractor = GenerateAttractor(seed);
     }
     StoreAttractorPoint(pos, attractor);
@@ -173,7 +180,7 @@ void ClosestBranch(uint3 id : SV_DispatchThreadID)
     StoreClosestVertex(pos, minIndex);
 
     // if it is within, add the attractor point's contribution to the growth direction
-    if (distance <= AttractionRadius) {
+    if (minDistance <= AttractionRadius) {
         float3 contribution = (attractor - closest) / minDistance;
         float3 previous = LoadGrowDirection(minIndex);
         StoreGrowDirection(minIndex, previous + contribution);
@@ -186,15 +193,14 @@ void GrowBranches(uint3 id : SV_DispatchThreadID)
     uint pos = id.x;
     float3 dir = LoadGrowDirection(pos);
     float3 stem = LoadStemDirection(pos);
-    
     if (length(dir) == 0.0f) return;
     StoreGrowDirection(pos, float3(0.0f, 0.0f, 0.0f));
 
     // if the grow direction is 0, ignore, else append a vertex in the grow direction and add a branch
     uint next = VertexCounter.IncrementCounter();
-    float3 grow = normalize(normalize(dir) + stem);
+    float3 grow = normalize(normalize(dir) + 0.40f * stem);
     StoreVertex(next, LoadVertex(pos) + BranchLength * grow);
     // it's a tree! --> a new branch iff a new vertex!
-    StoreIndices(next - 1, uint2(pos, next));
+    StoreIndices(next - SeedCount, uint2(pos, next));
     StoreStemDirection(next, grow);
 }
